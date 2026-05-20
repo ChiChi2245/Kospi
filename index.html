@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KOSPI FINVIZ Map</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div class="app">
+    <section class="index-strip" id="indexStrip"></section>
+
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">KRX CSV · KOSPI MARKET CAP TOP 200</div>
+        <h1>KOSPI FINVIZ Map</h1>
+        <p>업로드한 KRX CSV 기준 · 박스 크기 = 시가총액 · 색상 = 등락률</p>
+      </div>
+
+      <div class="summary">
+        <div class="summary-card">
+          <span>상승</span>
+          <strong id="upCount">0</strong>
+        </div>
+        <div class="summary-card">
+          <span>하락</span>
+          <strong id="downCount">0</strong>
+        </div>
+        <div class="summary-card">
+          <span>평균</span>
+          <strong id="avgChange">0%</strong>
+        </div>
+        <div class="summary-card wide">
+          <span>총 시가총액</span>
+          <strong id="totalCap">0조</strong>
+        </div>
+      </div>
+    </header>
+
+    <section class="toolbar">
+      <input id="searchInput" placeholder="종목명/코드 검색: 삼성전자, 005930..." />
+      <div class="legend">
+        <span><i class="red"></i>하락</span>
+        <span><i class="gray"></i>보합</span>
+        <span><i class="green"></i>상승</span>
+      </div>
+      <button id="kisButton">한투 API 테스트</button>
+      <span id="apiStatus">CSV 데이터 표시 중</span>
+    </section>
+
+    <main class="map-shell">
+      <div id="heatmap"></div>
+    </main>
+
+    <footer>
+      <span id="top5"></span>
+      <span>한투 API는 다음 단계에서 백엔드로 연결하세요.</span>
+    </footer>
+  </div>
+
+  <div id="tooltip" class="tooltip hidden"></div>
+
+  <script src="./data.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
