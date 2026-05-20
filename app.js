@@ -1,275 +1,222 @@
-const state = {
-  stocks: [...window.KOSPI_STOCKS],
-  query: "",
-};
-
-const indices = [
-  { name: "달러 환율", value: "1,510.85", change: "+7.05 (0.46%)", dir: "up", points: [15, 76, 68, 22, 52, 48, 57, 63, 70] },
-  { name: "코스피", value: "7,129.45", change: "-142.21 (1.95%)", dir: "down", points: [55, 18, 41, 25, 78, 88, 12, 20, 16, 30] },
-  { name: "코스닥", value: "1,050.60", change: "-33.76 (3.11%)", dir: "down", points: [42, 36, 53, 58, 31, 28, 24, 33, 31] },
-  { name: "나스닥", value: "25,870.71", change: "-220.02 (0.84%)", dir: "down", points: [70, 38, 24, 21, 30, 58, 74, 70, 63, 52, 44] },
-];
+const stocksOriginal = window.KOSPI_STOCKS || [];
+let stocks = [...stocksOriginal];
+let currentQuery = "";
 
 const heatmap = document.getElementById("heatmap");
 const tooltip = document.getElementById("tooltip");
 const searchInput = document.getElementById("searchInput");
-const kisButton = document.getElementById("kisButton");
-const apiStatus = document.getElementById("apiStatus");
+const dataStatus = document.getElementById("dataStatus");
 
-function formatKRW(value) {
-  return Number(value).toLocaleString("ko-KR");
+const sectorOrder = [
+  "TECHNOLOGY",
+  "COMMUNICATION SERVICES",
+  "CONSUMER CYCLICAL",
+  "CONSUMER DEFENSIVE",
+  "BATTERY & MATERIALS",
+  "BASIC MATERIALS",
+  "INDUSTRIALS",
+  "FINANCIAL",
+  "HEALTHCARE",
+  "ENERGY",
+  "UTILITIES",
+  "HOLDING COMPANIES",
+  "REAL ESTATE",
+  "OTHER",
+];
+
+function formatKRW(value){ return Number(value || 0).toLocaleString("ko-KR"); }
+function formatCap(value){ const jo = Number(value || 0) / 1000000000000; return jo >= 1 ? `${jo.toFixed(1)}조` : `${Math.round(value / 100000000).toLocaleString("ko-KR")}억`; }
+function getColor(change){
+  const abs = Math.min(Math.abs(Number(change || 0)), 8);
+  const i = abs / 8;
+  if(change > 0){ return `rgb(${Math.round(41-i*20)}, ${Math.round(78+i*150)}, ${Math.round(70+i*15)})`; }
+  if(change < 0){ return `rgb(${Math.round(93+i*150)}, ${Math.round(56-i*22)}, ${Math.round(65-i*18)})`; }
+  return "rgb(58,68,79)";
 }
 
-function formatMarketCap(value) {
-  const jo = value / 1_0000_0000_0000;
-  if (jo >= 1) return `${jo.toFixed(1)}조`;
-  return `${Math.round(value / 100_000_000).toLocaleString("ko-KR")}억`;
-}
-
-function colorByChange(change) {
-  const abs = Math.min(Math.abs(change), 8);
-  const t = abs / 8;
-
-  if (change > 0) {
-    const r = Math.round(32 - t * 12);
-    const g = Math.round(88 + t * 140);
-    const b = Math.round(74 + t * 10);
-    return `rgb(${r}, ${g}, ${b})`;
+function buildGroups(items){
+  const sectorMap = new Map();
+  for(const stock of items){
+    if(!sectorMap.has(stock.sector)) sectorMap.set(stock.sector, new Map());
+    const industryMap = sectorMap.get(stock.sector);
+    if(!industryMap.has(stock.industry)) industryMap.set(stock.industry, []);
+    industryMap.get(stock.industry).push(stock);
   }
-
-  if (change < 0) {
-    const r = Math.round(92 + t * 150);
-    const g = Math.round(55 - t * 18);
-    const b = Math.round(67 - t * 18);
-    return `rgb(${r}, ${g}, ${b})`;
-  }
-
-  return "rgb(78, 88, 102)";
+  return sectorOrder.filter(s => sectorMap.has(s)).map(sector => {
+    const industries = Array.from(sectorMap.get(sector).entries()).map(([industry, list]) => ({
+      name: industry,
+      value: list.reduce((a,b)=>a+b.marketCap,0),
+      stocks: list.sort((a,b)=>b.marketCap-a.marketCap)
+    })).sort((a,b)=>b.value-a.value);
+    return { name: sector, value: industries.reduce((a,b)=>a+b.value,0), industries };
+  }).sort((a,b)=>b.value-a.value);
 }
 
-function makeSparkline(points, dir) {
-  const width = 92;
-  const height = 46;
-  const max = Math.max(...points);
-  const min = Math.min(...points);
-  const range = Math.max(1, max - min);
-  const d = points.map((p, i) => {
-    const x = (i / (points.length - 1)) * width;
-    const y = height - ((p - min) / range) * height;
-    return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(" ");
-  const color = dir === "up" ? "#ff4d64" : "#2f8cff";
-
-  return `
-    <svg class="sparkline" viewBox="0 0 ${width} ${height}">
-      <path d="M 0 36 H 92" stroke="rgba(255,255,255,.25)" stroke-width="1" stroke-dasharray="4 5" fill="none"></path>
-      <path d="${d}" stroke="${color}" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"></path>
-    </svg>
-  `;
-}
-
-function renderIndices() {
-  document.getElementById("indexStrip").innerHTML = indices.map(item => `
-    <article class="index-card">
-      ${makeSparkline(item.points, item.dir)}
-      <div>
-        <div class="index-title">${item.name}</div>
-        <div class="index-value-row">
-          <span class="index-value">${item.value}</span>
-          <span class="index-change ${item.dir}">${item.change}</span>
-        </div>
-      </div>
-    </article>
-  `).join("");
-}
-
-function splitTreemap(items, rect, depth = 0) {
-  if (!items.length) return [];
-  if (items.length === 1) return [{ item: items[0], rect }];
-
-  const total = items.reduce((sum, item) => sum + item.marketCap, 0);
-  const half = total / 2;
-  let sum = 0;
-  let index = 0;
-
-  for (; index < items.length - 1; index++) {
-    if (sum + items[index].marketCap > half && index > 0) break;
-    sum += items[index].marketCap;
-  }
-
-  const left = items.slice(0, index + 1);
-  const right = items.slice(index + 1);
-  const leftValue = left.reduce((s, item) => s + item.marketCap, 0);
-  const ratio = leftValue / total;
-
-  if (rect.w >= rect.h) {
-    const w1 = rect.w * ratio;
-    return [
-      ...splitTreemap(left, { x: rect.x, y: rect.y, w: w1, h: rect.h }, depth + 1),
-      ...splitTreemap(right, { x: rect.x + w1, y: rect.y, w: rect.w - w1, h: rect.h }, depth + 1),
-    ];
-  }
-
-  const h1 = rect.h * ratio;
-  return [
-    ...splitTreemap(left, { x: rect.x, y: rect.y, w: rect.w, h: h1 }, depth + 1),
-    ...splitTreemap(right, { x: rect.x, y: rect.y + h1, w: rect.w, h: rect.h - h1 }, depth + 1),
-  ];
-}
-
-function getVisibleStocks() {
-  const q = state.query.trim().toLowerCase();
-  if (!q) return state.stocks;
-  return state.stocks.filter(stock =>
-    stock.name.toLowerCase().includes(q) ||
-    stock.code.toLowerCase().includes(q)
-  );
-}
-
-function renderSummary() {
-  const stocks = state.stocks;
-  const up = stocks.filter(s => s.change > 0).length;
-  const down = stocks.filter(s => s.change < 0).length;
-  const avg = stocks.reduce((sum, s) => sum + s.change, 0) / stocks.length;
-  const totalCap = stocks.reduce((sum, s) => sum + s.marketCap, 0);
-
-  document.getElementById("upCount").textContent = up;
-  document.getElementById("downCount").textContent = down;
-  document.getElementById("avgChange").textContent = `${avg > 0 ? "+" : ""}${avg.toFixed(2)}%`;
-  document.getElementById("avgChange").style.color = avg >= 0 ? "#30c66b" : "#ff4d64";
-  document.getElementById("totalCap").textContent = formatMarketCap(totalCap);
-
-  const top5 = [...stocks].sort((a, b) => b.marketCap - a.marketCap).slice(0, 5);
-  document.getElementById("top5").textContent =
-    `Top 5: ${top5.map(s => `${s.name} ${formatMarketCap(s.marketCap)}`).join(" · ")}`;
-}
-
-function renderHeatmap() {
-  const stocks = getVisibleStocks().sort((a, b) => b.marketCap - a.marketCap);
-  const width = heatmap.clientWidth;
-  const height = heatmap.clientHeight;
-
-  heatmap.innerHTML = "";
-
-  if (!stocks.length) {
-    heatmap.innerHTML = `<div style="padding:24px;color:white;">검색 결과가 없습니다.</div>`;
-    return;
-  }
-
-  const rects = splitTreemap(stocks, { x: 0, y: 0, w: width, h: height });
-
-  rects.forEach(({ item, rect }) => {
-    const tile = document.createElement("div");
-    const pad = 1;
-    const w = Math.max(0, rect.w - pad * 2);
-    const h = Math.max(0, rect.h - pad * 2);
-    const area = w * h;
-
-    tile.className = "tile";
-    tile.style.left = `${rect.x + pad}px`;
-    tile.style.top = `${rect.y + pad}px`;
-    tile.style.width = `${w}px`;
-    tile.style.height = `${h}px`;
-    tile.style.background = colorByChange(item.change);
-
-    const fontSize = area > 26000 ? 34 : area > 14000 ? 24 : area > 7000 ? 17 : area > 2600 ? 12 : 9;
-    const showName = area > 850;
-    const showChange = area > 2300;
-    const shortName = item.name.length > 6 ? item.name.slice(0, 6) : item.name;
-
-    tile.innerHTML = `
-      ${area > 11000 ? `<div class="sector-label">${item.sector}</div>` : ""}
-      ${showName ? `
-        <div class="tile-text" style="font-size:${fontSize}px">
-          <span class="tile-name">${area > 9000 ? item.name : shortName}</span>
-          ${showChange ? `<span class="tile-change">${item.change > 0 ? "+" : ""}${item.change.toFixed(2)}%</span>` : ""}
-        </div>
-      ` : ""}
-    `;
-
-    tile.addEventListener("mouseenter", () => showTooltip(item));
-    tile.addEventListener("mousemove", moveTooltip);
-    tile.addEventListener("mouseleave", hideTooltip);
-
-    heatmap.appendChild(tile);
+function splitRects(items, rect, getValue){
+  const total = items.reduce((sum,item)=>sum+getValue(item),0) || 1;
+  let cursor = 0;
+  const horizontal = rect.w >= rect.h;
+  return items.map(item => {
+    const share = getValue(item) / total;
+    if(horizontal){
+      const w = item === items[items.length-1] ? rect.w - cursor : Math.round(rect.w * share);
+      const out = { x: rect.x + cursor, y: rect.y, w, h: rect.h };
+      cursor += w;
+      return out;
+    } else {
+      const h = item === items[items.length-1] ? rect.h - cursor : Math.round(rect.h * share);
+      const out = { x: rect.x, y: rect.y + cursor, w: rect.w, h };
+      cursor += h;
+      return out;
+    }
   });
 }
 
-function showTooltip(stock) {
-  tooltip.classList.remove("hidden");
-  tooltip.innerHTML = `
-    <h3>${stock.name}</h3>
-    <div class="sub">${stock.code} · ${stock.sector} · ${stock.industry}</div>
-    <div class="tooltip-grid">
-      <div class="tooltip-box">
-        <span>현재가</span>
-        <b>${formatKRW(stock.price)}원</b>
-      </div>
-      <div class="tooltip-box">
-        <span>등락률</span>
-        <b style="color:${stock.change >= 0 ? "#30c66b" : "#ff4d64"}">${stock.change > 0 ? "+" : ""}${stock.change.toFixed(2)}%</b>
-      </div>
-    </div>
-    <div class="tooltip-box" style="margin-top:8px">
-      <span>시가총액</span>
-      <b>${formatMarketCap(stock.marketCap)}</b>
-    </div>
-  `;
-}
-
-function moveTooltip(event) {
-  tooltip.style.left = `${Math.min(event.clientX + 16, window.innerWidth - 250)}px`;
-  tooltip.style.top = `${Math.min(event.clientY + 16, window.innerHeight - 190)}px`;
-}
-
-function hideTooltip() {
-  tooltip.classList.add("hidden");
-}
-
-async function testKisApi() {
-  apiStatus.textContent = "한투 API 테스트 중...";
-
-  try {
-    const codes = state.stocks.slice(0, 20).map(s => s.code).join(",");
-    const response = await fetch(`/api/kis/quotes?codes=${codes}`);
-
-    if (!response.ok) {
-      throw new Error("백엔드 연결 실패");
-    }
-
-    const quotes = await response.json();
-    const quoteMap = new Map(quotes.map(q => [q.code, q]));
-
-    state.stocks = state.stocks.map(stock => {
-      const quote = quoteMap.get(stock.code);
-      if (!quote) return stock;
-
-      return {
-        ...stock,
-        price: Number(quote.price ?? stock.price),
-        change: Number(quote.changeRate ?? stock.change),
-      };
-    });
-
-    apiStatus.textContent = `한투 API 반영 완료 · ${quotes.length}개`;
-    render();
-  } catch (error) {
-    apiStatus.textContent = "백엔드가 아직 없어서 CSV 데이터만 표시 중";
+function renderIndices(){
+  const strip = document.getElementById("indexStrip");
+  strip.innerHTML = "";
+  for(const item of window.MARKET_INDICES || []){
+    const card = document.createElement("div");
+    card.className = "index-card";
+    const color = item.direction === "up" ? "#ff5c70" : "#4c9bff";
+    const svg = sparkline(item.points, color);
+    card.innerHTML = `${svg}<div><div class="index-title">${item.name}</div><div class="index-row"><span class="index-value">${item.value}</span><span class="index-change ${item.direction === "up" ? "up" : "down"}">${item.changeText}</span></div></div>`;
+    strip.appendChild(card);
   }
 }
 
-function render() {
-  renderSummary();
-  renderHeatmap();
+function sparkline(points, color){
+  const w=92,h=46,max=Math.max(...points),min=Math.min(...points),range=Math.max(1,max-min);
+  const d=points.map((p,i)=>`${i===0?'M':'L'}${((i/(points.length-1))*w).toFixed(1)},${(h-((p-min)/range)*h).toFixed(1)}`).join(' ');
+  return `<svg width="92" height="46" viewBox="0 0 92 46"><path d="M 0 36 H 92" stroke="rgba(255,255,255,.25)" stroke-width="1" stroke-dasharray="4 5" fill="none"/><path d="${d}" stroke="${color}" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 }
 
-searchInput.addEventListener("input", (event) => {
-  state.query = event.target.value;
-  renderHeatmap();
-});
+function renderSummary(items){
+  const up = items.filter(s=>s.change>0).length;
+  const down = items.filter(s=>s.change<0).length;
+  const flat = items.filter(s=>s.change===0).length;
+  const avg = items.reduce((a,b)=>a+b.change,0)/items.length;
+  const totalCap = items.reduce((a,b)=>a+b.marketCap,0);
+  document.getElementById("summary").innerHTML = `
+    <div class="summary-card"><small>상승</small><strong class="up">${up}</strong></div>
+    <div class="summary-card"><small>하락</small><strong class="down">${down}</strong></div>
+    <div class="summary-card"><small>보합</small><strong>${flat}</strong></div>
+    <div class="summary-card"><small>평균 등락률</small><strong class="${avg>=0?'up':'down'}">${avg>0?'+':''}${avg.toFixed(2)}%</strong></div>
+    <div class="summary-card"><small>총 시가총액</small><strong>${formatCap(totalCap)}</strong></div>`;
+  document.getElementById("topFive").textContent = "Top 5: " + items.slice(0,5).map(s=>`${s.name} ${formatCap(s.marketCap)}`).join(" · ");
+}
 
-kisButton.addEventListener("click", testKisApi);
+function renderHeatmap(){
+  const query = currentQuery.trim().toLowerCase();
+  const filtered = query ? stocks.filter(s => s.name.toLowerCase().includes(query) || s.code.toLowerCase().includes(query)) : stocks;
+  renderSummary(stocks);
+  heatmap.innerHTML = "";
+  const width = heatmap.clientWidth;
+  const height = heatmap.clientHeight;
+  const sectors = buildGroups(filtered.length ? filtered : stocks);
+  const sectorRects = splitRects(sectors, {x:0,y:0,w:width,h:height}, s=>s.value);
+
+  sectors.forEach((sector, si) => {
+    const r = sectorRects[si];
+    const sectorEl = document.createElement("div");
+    sectorEl.className = "sector";
+    setRect(sectorEl, r);
+    sectorEl.innerHTML = `<div class="sector-title">${sector.name}</div>`;
+    heatmap.appendChild(sectorEl);
+
+    const inner = {x:2, y:20, w:Math.max(0,r.w-4), h:Math.max(0,r.h-22)};
+    const industryRects = splitRects(sector.industries, inner, i=>i.value);
+    sector.industries.forEach((industry, ii) => {
+      const ir = industryRects[ii];
+      if(ir.w < 8 || ir.h < 8) return;
+      const indEl = document.createElement("div");
+      indEl.className = "industry";
+      setRect(indEl, ir);
+      if(ir.w > 50 && ir.h > 25) indEl.innerHTML = `<div class="industry-title">${industry.name}</div>`;
+      sectorEl.appendChild(indEl);
+
+      const stockArea = {x:1, y: ir.h > 25 ? 14 : 1, w:Math.max(0,ir.w-2), h:Math.max(0,ir.h-(ir.h>25?15:2))};
+      layoutStocks(industry.stocks, stockArea, indEl, query);
+    });
+  });
+}
+
+function layoutStocks(list, rect, parent, query){
+  const rows = Math.max(1, Math.round(Math.sqrt(list.length * rect.h / Math.max(rect.w,1))));
+  const total = list.reduce((a,b)=>a+b.marketCap,0) || 1;
+  let cursorY = rect.y;
+  let start = 0;
+  for(let row=0; row<rows && start<list.length; row++){
+    const remainRows = rows - row;
+    const remainValue = list.slice(start).reduce((a,b)=>a+b.marketCap,0);
+    const target = remainValue / remainRows;
+    let rowItems=[], value=0;
+    while(start < list.length && (value < target || rowItems.length===0)){
+      rowItems.push(list[start]); value += list[start].marketCap; start++;
+    }
+    const rowH = row === rows-1 ? rect.y + rect.h - cursorY : Math.max(12, Math.round(rect.h * (value / total)));
+    let cursorX = rect.x;
+    rowItems.forEach((stock, idx)=>{
+      const w = idx === rowItems.length-1 ? rect.x + rect.w - cursorX : Math.max(8, Math.round(rect.w * (stock.marketCap / value)));
+      createTile(stock, {x:cursorX,y:cursorY,w,h:rowH}, parent, query);
+      cursorX += w;
+    });
+    cursorY += rowH;
+  }
+}
+
+function createTile(stock, r, parent, query){
+  if(r.w <= 3 || r.h <= 3) return;
+  const tile = document.createElement("div");
+  tile.className = "tile";
+  const matched = query && (stock.name.toLowerCase().includes(query) || stock.code.toLowerCase().includes(query));
+  if(query && !matched) tile.classList.add("muted");
+  tile.style.background = getColor(stock.change);
+  setRect(tile, r);
+  const area = r.w * r.h;
+  if(area > 700){
+    const nameSize = area > 24000 ? 34 : area > 12000 ? 25 : area > 5200 ? 18 : area > 2200 ? 12 : 9;
+    const label = area > 7600 ? stock.name : stock.name.slice(0,5);
+    tile.innerHTML = `<div class="tile-name" style="font-size:${nameSize}px">${label}</div>${area>1800 ? `<div class="tile-change" style="font-size:${Math.max(9,Math.round(nameSize*.55))}px">${stock.change>0?'+':''}${stock.change.toFixed(2)}%</div>` : ''}`;
+  }
+  tile.addEventListener("mousemove", e => showTooltip(e, stock));
+  tile.addEventListener("mouseleave", hideTooltip);
+  parent.appendChild(tile);
+}
+
+function setRect(el, r){
+  el.style.left = `${r.x}px`; el.style.top = `${r.y}px`; el.style.width = `${Math.max(0,r.w)}px`; el.style.height = `${Math.max(0,r.h)}px`;
+}
+
+function showTooltip(e, stock){
+  tooltip.classList.remove("hidden");
+  tooltip.innerHTML = `<div class="tooltip-title">${stock.name}</div><div class="tooltip-sub">${stock.code} · ${stock.sector}</div><div class="tooltip-grid"><div class="tooltip-box"><small>현재가</small><strong>${formatKRW(stock.price)}원</strong></div><div class="tooltip-box"><small>등락률</small><strong class="${stock.change>=0?'up':'down'}">${stock.change>0?'+':''}${stock.change.toFixed(2)}%</strong></div></div><div class="tooltip-cap"><small>시가총액</small><br><strong>${formatCap(stock.marketCap)}</strong></div>`;
+  const x = Math.min(window.innerWidth - 255, e.clientX + 14);
+  const y = Math.min(window.innerHeight - 190, e.clientY + 14);
+  tooltip.style.left = `${x}px`; tooltip.style.top = `${y}px`;
+}
+function hideTooltip(){ tooltip.classList.add("hidden"); }
+
+async function testKisApi(){
+  const codes = stocks.slice(0,20).map(s=>s.code).join(',');
+  dataStatus.textContent = "한투 API 테스트 중...";
+  try{
+    const res = await fetch(`/api/kis/quotes?codes=${codes}`);
+    if(!res.ok) throw new Error('backend not ready');
+    const quotes = await res.json();
+    const map = new Map(quotes.map(q=>[q.code,q]));
+    stocks = stocks.map(s => map.has(s.code) ? {...s, price:Number(map.get(s.code).price ?? s.price), change:Number(map.get(s.code).changeRate ?? s.change)} : s);
+    dataStatus.textContent = `한투 API 반영 완료 · ${quotes.length}개 종목`;
+    renderHeatmap();
+  }catch(err){
+    dataStatus.textContent = "백엔드 연결 전이라 CSV 데이터만 표시 중";
+  }
+}
+
+searchInput.addEventListener("input", e => { currentQuery = e.target.value; renderHeatmap(); });
+document.getElementById("resetBtn").addEventListener("click", () => { currentQuery=""; searchInput.value=""; renderHeatmap(); });
+document.getElementById("kisBtn").addEventListener("click", testKisApi);
 window.addEventListener("resize", () => renderHeatmap());
 
 renderIndices();
-render();
+renderHeatmap();
